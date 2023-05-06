@@ -101,7 +101,7 @@ In this part of the assignment you will try to build a model to classify whether
 Start with only the 12 audio features as predictors. You can later feature engineer to death.
 
 ```{r}
-# predictors <- ### YOUR CODE HERE ###
+predictors <- colnames(spotify_songs2[,12:23]) 
 
 spotify_songs2 <- spotify_songs2 %>%
   select(playlist_genre, all_of(predictors))
@@ -112,7 +112,9 @@ Split the data into `sptfy_tr` and `sptfy_te`, the training and testing datasets
 ```{r}
 set.seed(2013)
 
-### YOUR CODE HERE ###
+spot_split <- spotify_songs2 %>% initial_split(prop = 0.8)
+sptfy_tr <- training(spot_split)
+sptfy_te <- testing(spot_split)
 
 glue("train no. of rows: {nrow(sptfy_tr)}
      test no. of rows: {nrow(sptfy_te)}")
@@ -121,14 +123,25 @@ glue("train no. of rows: {nrow(sptfy_tr)}
 Make a `recipe()` for modeling `playlist_genre` from all predictors. Including a scaling step for all numeric variables to have mean 0 and standard deviation 1, and don't forget to `prep()` everything on the *proper* dataset:
 
 ```{r}
-# sptfy_rec <- ### YOUR CODE HERE ###
+sptfy_rec <- recipe(playlist_genre ~ ., data = sptfy_tr)
+sptfy_rec <-  sptfy_rec %>%
+  step_zv(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+sptfy_rec <- sptfy_rec %>% prep(sptfy_tr)
 ```
 
 Now `bake()` your recipe to produce the `sptfy_tr_ready` and `sptfy_te_ready` datasets:
 
 ```{r}
-# sptfy_tr_ready <- ### YOUR CODE HERE ###
-# sptfy_te_ready <- ### YOUR CODE HERE ###
+sptfy_tr_ready <- sptfy_rec %>% bake(sptfy_tr) 
+sptfy_te_ready <- sptfy_rec %>% bake(sptfy_te) 
+# let's check normality (only for danceability):
+# training
+glue("mean of danceability in orig training: {format(mean(sptfy_tr$danceability), digits = 3)}, sd: {format(sd(sptfy_tr$danceability), digits = 3)}
+     mean in baked training: {format(mean(sptfy_tr_ready$danceability), digits = 1)}, sd: {format(sd(sptfy_tr_ready$danceability), digits = 3)}")
+# testing
+glue("mean of danceability in orig testing: {format(mean(sptfy_te$danceability), digits = 3)}, sd: {format(sd(sptfy_te$danceability), digits = 3)}
+     mean of danceability in baked testing: {format(mean(sptfy_te_ready$danceability), digits = 1)}, sd: {format(sd(sptfy_te_ready$danceability), digits = 3)}")
 ```
 
 Make sure the *proper* data is properly normalized.
@@ -136,34 +149,70 @@ Make sure the *proper* data is properly normalized.
 Now build a `parsnip` classification model with `logistic_reg()`, and set the engine for "glmnet". Build two classifiers, one with Ridge-like L2 penalty of 0.001, one with Lasso-like L1 penalty of 0.001, and fit them on the `sptfy_tr_ready` dataset:
 
 ```{r}
-# mod_l1 <- ### YOUR CODE HERE ###
-# mod_l2 <- ### YOUR CODE HERE ###
+mod_l1 <- logistic_reg(mixture = 1, penalty = 0.001) %>%
+  set_engine(engine = "glmnet") %>%
+  fit(playlist_genre ~ . ,data = sptfy_tr_ready)
+mod_l2 <- logistic_reg(mixture = 0, penalty = 0.001) %>%
+  set_engine(engine = "glmnet") %>%
+  fit(playlist_genre ~ . ,data = sptfy_tr_ready)
 ```
 
 Build a Random Forests `parsnip` classification model and set the engine to the "randomForest", with 100 trees, 4 variables at each split and minimum observations at leaf of 50:
 
 ```{r}
-# mod_rf <- ### YOUR CODE HERE ###
+mod_rf <- rand_forest(mode = "classification", mtry = 4, trees = 100, min_n = 50) %>%
+  set_engine("randomForest") %>%
+  fit_xy(x = sptfy_tr_ready[, -13],
+         y = sptfy_tr_ready$playlist_genre)
 ```
 
 Build a Kernel SVM `parsnip` classification model (look it up!) and set the engine to "kernlab". Use the `rbf_sigma` parameter of 0.1.
 
 ```{r}
-# mod_ksvm <- ### YOUR CODE HERE ###
+mod_ksvm <- svm_rbf(mode = "classification", rbf_sigma = 0.1) %>%
+  set_engine("kernlab") %>%
+  fit_xy(x= sptfy_tr_ready[ ,-13],                                                  y=sptfy_tr_ready$playlist_genre)
 ```
 
 For all 4 models combined, use a similar approach to what we did in class, for creating a tidy `results_test` dataset which will hold for every observation in the `sptfy_te_ready` data the `method` used, the predicted `.pred_RnB` score of the song being of genre RnB and the `truth` label.
 
 ```{r}
-# results_test <- ### YOUR CODE HERE ###
-# dim(results_test)
-# head(results_test)
+results_test <- mod_l2 %>%
+  predict(new_data = sptfy_te_ready, penalty = 0.001, type = "prob") %>%
+  mutate(
+    truth = sptfy_te_ready$playlist_genre,
+    method = "Ridge"
+  ) %>%
+  bind_rows(mod_l1 %>%
+    predict(new_data = sptfy_te_ready, penalty = 0.001, type = "prob") %>%
+    mutate(
+      truth = sptfy_te_ready$playlist_genre,
+      method = "Lasso"
+  )) %>%
+  bind_rows(mod_rf %>%
+    predict(new_data = sptfy_te_ready, type = "prob") %>%
+    mutate(
+      truth = sptfy_te_ready$playlist_genre,
+      method = "RF"
+  )) %>%
+  bind_rows(mod_ksvm %>%
+    predict(new_data = sptfy_te_ready, type = "prob") %>%
+    mutate(
+      truth = sptfy_te_ready$playlist_genre,
+      method = "Kernel SVM"
+  )) %>% select(method, .pred_RnB, truth)
+
+dim(results_test)
+head(results_test)
 ```
 
 Finally use the `roc_auc` function from the `yardstick` package to extract the test AUC for each model. Use the score for "RnB" and be heavily inspired from what we did in class.
 
 ```{r}
-### YOUR CODE HERE ###
+results_test %>%
+  rename(truth = truth, estimate = .pred_RnB) %>%
+  group_by(method) %>%
+  roc_auc(truth, estimate, event_level = "second")
 ```
 
 You should see AUCs of about 90% and above (does this surprise you?), if not perhaps you should review your process.
@@ -282,9 +331,22 @@ f4 <- function(x, y) {
 
 ```
 
+
 * Which is the best option giving the most realistic test MSE according to Moscovich and Rosset? Explain in short.
+- The best option is 'f3'.
+according to section 1.2. in the paper: "The right way to combine preprocessing and cross-validation",
+To guarantee that the cross-validation estimator is an unbiased estimator of model performance, all data-dependent unsupervised preprocessing operations should be determined using only the training set Str and then merely applied to the validation set Sval,
+as is commonly done for (label-dependent) feature-selection and other supervised preprocessing procedures.
+The function f3 does exactly that.
+
 * Which is the option they are most concerned with? Explain in short.
+- The most problematic option is 'f1'.
+Because this option performs the scalling of the data prior to the splitting. ('f1' is worse than 'f2' because it doesn't even randomly splits the data).
+
 * Explain in short what's wrong with the other two options.
+- As explained above, 'f2' is similar to 'f1' with the exception of randomly splitiing the data.
+'f4' performs the scalling using the test data instead of the training data.
+
 * Bonus 2 points: Under which assumptions/circumstances are the three options other than the best not *that* bad? (hint: you might like to read further)
 
 ### Wrap up
